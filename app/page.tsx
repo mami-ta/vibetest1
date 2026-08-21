@@ -1,8 +1,10 @@
 // ─────────────────────────────────────────────────────────
 // これは「業務アプリの画面」です。宣伝ページ（LP）ではありません。
 //
-// /build を実行すると、docs/03_spec.md にそって
-// この構造を保ったまま、あなたの題材のツールに作り替えられます。
+// 大学受験のスケジュール管理ツール。
+// 1件 = 1つの予定（出願締切 / 試験日 / 合格発表 / 入学手続き）。
+// 管理したい日付が4種類あるので、1件に4つ持たせるのではなく
+// 「1件 = 1つの予定」にして、すべてを1本の期限順リストに並べている。
 //
 // 画面の骨格（この形は崩さない）:
 //   左メニュー（.side）＋ 上部バー（.topbar）＋ 本体（.content）
@@ -13,9 +15,8 @@
 import { useEffect, useMemo, useState } from "react";
 
 // ═══════════════════════════════════════════════════════════
-//  画面の型 ── ここだけ選び直せば、見た目と並び方が変わります
-//  /build が docs/03_spec.md の「0. 画面の型」を見てここを設定します。
-//  ⚠ 新しいCSSは書かない。下の選択肢から選ぶこと。
+//  画面の型 ── docs/03_spec.md「0. 画面の型」のとおり
+//  ⚠ 新しいCSSは書かない。用意された選択肢から選ぶこと。
 // ═══════════════════════════════════════════════════════════
 
 /** 色み。業種の空気に合わせる
@@ -29,41 +30,42 @@ const TONE = "pine";
 
 /** 密度。1日に見る件数で決める
  *  "compact" 1日20件以上（多くの行を1画面に）
- *  "normal"  ふつう（初期値）
+ *  "normal"  ふつう
  *  "roomy"   1日5件以下で、1件が重い（ゆったり）
  */
-const DENSITY = "normal";
+const DENSITY = "roomy";
 
 /** 画面の型。3行目「何が一覧で見られると助かるか」で決める
- *  "queue" 待たせているものを、古い順に片づける（問い合わせ・依頼・返信）
- *  "stage" いくつかの段階を順に進んでいく（査定→撮影→値付け→出品）
- *  "due"   期限がある（締切・訪問予定・提出物・更新期限）
+ *  "queue" 待たせているものを、古い順に片づける
+ *  "stage" いくつかの段階を順に進んでいく
+ *  "due"   期限がある（締切・試験日・発表日・手続き期限）
  */
-const LAYOUT: "queue" | "stage" | "due" = "queue";
+const LAYOUT: "queue" | "stage" | "due" = "due";
 
-/** 数え方。件 / 名 / 棟 / 台 / 点 / 本 など、その仕事の言葉で */
-const UNIT = "件";
+/** 数え方。1件 = 1つの予定なので「予定」で数える
+ *  （「校」にすると、5校しか受けないのに「全14校」と出て誤解を招く） */
+const UNIT = "予定";
 
-/** 区分の選択肢。LAYOUT が "stage" のときは、これが「段階」になる（順番どおりに並ぶ） */
-const CATEGORIES = ["LINE", "電話", "メール", "紹介"];
+/** 区分の選択肢。麻美さんが家族と共有したい4つの日付、そのまま */
+const CATEGORIES = ["出願締切", "試験日", "合格発表", "入学手続き"];
 
 // ═══════════════════════════════════════════════════════════
 
-/** 1件のデータ。/build でこの項目名を題材に合わせて変える */
+/** 1件のデータ = 1つの予定 */
 type Record = {
   id: string;
-  name: string;      // 主たる名前（顧客名・品名など）
-  category: string;  // 区分／段階／種別
-  note: string;      // メモ
-  date: string;      // YYYY-MM-DD（queue=受けた日 / stage=受け入れた日 / due=期限）
-  done: boolean;     // 片づいたか
+  school: string; // 学校・学部・試験区分（例: 北山大学 経済 一般前期）
+  kind: string;   // 区分（出願締切 / 試験日 / 合格発表 / 入学手続き）
+  memo: string;   // メモ（受験科目・検定料・持ち物など）
+  due: string;    // 期限日 YYYY-MM-DD
+  done: boolean;  // 済んだか
 };
 
 type View = "list" | "new" | "settings";
 type Filter = "open" | "done" | "all";
 
-const KEY = "starter-records";
-const NAME_KEY = "starter-appname";
+const KEY = "exam-schedule-data";
+const NAME_KEY = "exam-schedule-appname";
 
 /** 画面の型ごとの言葉。ここを直せば画面じゅうの文言が揃って変わる */
 const TEXT = {
@@ -84,16 +86,16 @@ const TEXT = {
     headOpen: "進行中",
   },
   due: {
-    sub: "期限が近い順に並びます",
-    open: "未完了", done: "完了",
-    toTo: "完了にする", toBack: "未完了に戻す",
-    dateLabel: "期限", catLabel: "種別",
-    stat2: "期限切れ",
-    headOpen: "未完了（期限が近い順）",
+    sub: "出願・試験・発表・手続きの予定が、期限の近い順に並びます",
+    open: "これから", done: "済み",
+    toTo: "済みにする", toBack: "これからに戻す",
+    dateLabel: "期限日", catLabel: "区分",
+    stat2: "期限が過ぎている",
+    headOpen: "これから（期限が近い順）",
   },
 }[LAYOUT];
 
-/** n日前の日付。マイナスを渡すとn日後（"due" の見本データで使う） */
+/** n日前の日付。マイナスを渡すとn日後 */
 const ago = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const today = () => ago(0);
 
@@ -103,28 +105,30 @@ const diff = (d: string) =>
     (new Date(d + "T00:00:00").getTime() - new Date(today() + "T00:00:00").getTime()) / 86400000
   );
 
-/** 何日待たせているか（"queue" / "stage" 用） */
+/** 何日過ぎているか */
 const waiting = (d: string) => Math.max(0, -diff(d));
 
 /**
- * 見本データ。/build でこの中身を題材に合わせて入れ替える。
- * ⚠ 実在の人名・会社名・連絡先は使わない。件数は12〜15件（少ないと画面が寂しく見える）
+ * 見本データ。学校名はすべて架空。
+ * 実在の大学名に架空の日程を付けると、事実でない入試情報を表示することになるため。
  */
 const SAMPLE: Record[] = [
-  { id: "s01", name: "佐藤さん（中2）", category: "LINE",   note: "数学と英語、週2希望。木曜以外",        date: ago(0),  done: false },
-  { id: "s02", name: "田村さん（小5）", category: "電話",   note: "折り返し希望 18時以降",               date: ago(1),  done: false },
-  { id: "s03", name: "鈴木さん（高1）", category: "紹介",   note: "在籍生のご家族から。物理を見てほしい",  date: ago(1),  done: false },
-  { id: "s04", name: "中村さん（中3）", category: "メール", note: "受験相談。志望校はまだ決めていない",   date: ago(2),  done: false },
-  { id: "s05", name: "渡辺さん（中2）", category: "紹介",   note: "平日夕方のみ。部活が19時まで",         date: ago(3),  done: false },
-  { id: "s06", name: "小林さん（中1）", category: "LINE",   note: "体験授業の日程を調整中",              date: ago(4),  done: false },
-  { id: "s07", name: "松本さん（小4）", category: "メール", note: "兄弟割引について聞かれている",         date: ago(5),  done: false },
-  { id: "s08", name: "山口さん（小6）", category: "電話",   note: "料金表を送ってほしいとのこと",         date: ago(6),  done: false },
-  { id: "s09", name: "吉田さん（高2）", category: "LINE",   note: "夏期講習の残席を確認したい",           date: ago(9),  done: false },
-  { id: "s10", name: "井上さん（中3）", category: "電話",   note: "面談日程を確定。来週火曜18時",         date: ago(12), done: true },
-  { id: "s11", name: "清水さん（高3）", category: "LINE",   note: "資料送付済み。返事待ち",              date: ago(14), done: true },
-  { id: "s12", name: "森さん（小3）",   category: "紹介",   note: "体験のあと入会。4月から週1",          date: ago(16), done: true },
-  { id: "s13", name: "大野さん（中1）", category: "メール", note: "他塾と比較検討中とのこと",            date: ago(18), done: true },
-  { id: "s14", name: "岡田さん（高1）", category: "LINE",   note: "今回は見送りとご連絡あり",            date: ago(21), done: true },
+  // これから（9件）
+  { id: "s01", school: "東雲学院大学 国際 総合型",   kind: "合格発表",   memo: "Web発表 10:00〜　結果を家族に共有する",       due: ago(3),   done: false },
+  { id: "s02", school: "桜川女子大学 文 学校推薦",   kind: "試験日",     memo: "面接20分＋小論文60分　自己PRカードは提出済み", due: ago(1),   done: false },
+  { id: "s03", school: "北山大学 経済 一般前期",     kind: "出願締切",   memo: "Web出願は23:59まで　検定料35,000円",          due: ago(0),   done: false },
+  { id: "s04", school: "南野大学 文 共テ利用",       kind: "出願締切",   memo: "共通テストの成績のみで判定　検定料18,000円",   due: ago(-1),  done: false },
+  { id: "s05", school: "青嶺工科大学 情報 一般前期", kind: "出願締切",   memo: "英・数ⅠAⅡB・物理　検定料35,000円",           due: ago(-3),  done: false },
+  { id: "s06", school: "桜川女子大学 文 学校推薦",   kind: "合格発表",   memo: "Web発表 14:00〜　受験番号は控えてある",       due: ago(-5),  done: false },
+  { id: "s07", school: "北山大学 法 一般前期",       kind: "出願締切",   memo: "経済と同時出願なら2学部目は20,000円",         due: ago(-6),  done: false },
+  { id: "s08", school: "東雲学院大学 国際 総合型",   kind: "入学手続き", memo: "第一次手続金 250,000円　振込期限に注意",      due: ago(-9),  done: false },
+  { id: "s09", school: "北山大学 経済 一般前期",     kind: "試験日",     memo: "9:30集合　英・国・数ⅠA　昼食持参",           due: ago(-12), done: false },
+  // 済み（5件）
+  { id: "s10", school: "南野大学 国際 学校推薦",     kind: "合格発表",   memo: "補欠。繰り上げの連絡は2月末まで待つ",         due: ago(7),   done: true },
+  { id: "s11", school: "東雲学院大学 国際 総合型",   kind: "試験日",     memo: "面接30分　手ごたえはあったとのこと",          due: ago(10),  done: true },
+  { id: "s12", school: "桜川女子大学 文 学校推薦",   kind: "出願締切",   memo: "推薦書を高校に依頼　書類一式を郵送済み",      due: ago(15),  done: true },
+  { id: "s13", school: "青嶺工科大学 情報 総合型",   kind: "合格発表",   memo: "結果を確認済み　一般前期に切り替える",        due: ago(19),  done: true },
+  { id: "s14", school: "東雲学院大学 国際 総合型",   kind: "出願締切",   memo: "志望理由書は担任に見てもらってから提出",      due: ago(21),  done: true },
 ];
 
 /** 一覧をどう束ねるか。LAYOUT ごとに変わる */
@@ -134,12 +138,11 @@ function grouped(list: Record[], filter: Filter): Group[] {
   const head = filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて";
 
   if (LAYOUT === "stage" && filter === "open") {
-    // 段階ごとに束ねる。CATEGORIES の順に並べ、中身が無い段階は出さない
     return CATEGORIES.map((c) => ({
       key: c,
       label: c,
       mark: undefined,
-      items: list.filter((i) => i.category === c),
+      items: list.filter((i) => i.kind === c),
     })).filter((g) => g.items.length > 0);
   }
 
@@ -151,7 +154,7 @@ function grouped(list: Record[], filter: Filter): Group[] {
       { key: "later", label: "それ以降",                       items: [] },
     ];
     list.forEach((i) => {
-      const d = diff(i.date);
+      const d = diff(i.due);
       if (d < 0) buckets[0].items.push(i);
       else if (d <= 1) buckets[1].items.push(i);
       else if (d <= 7) buckets[2].items.push(i);
@@ -163,23 +166,24 @@ function grouped(list: Record[], filter: Filter): Group[] {
   return [{ key: "all", label: head, items: list }];
 }
 
-/** 行の右に出す小さなバッジ。LAYOUT ごとに意味が変わる */
+/** 行の右に出す小さなバッジ */
 function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
   if (r.done) return null;
   if (LAYOUT === "due") {
-    const d = diff(r.date);
+    const d = diff(r.due);
     if (d < 0) return { text: `${-d}日 超過`, kind: "danger" };
     if (d === 0) return { text: "今日", kind: "warn" };
+    if (d === 1) return { text: "明日", kind: "warn" };
     return null;
   }
-  const w = waiting(r.date);
+  const w = waiting(r.due);
   const limit = LAYOUT === "stage" ? 7 : 3;
   return w >= limit ? { text: `${w}日`, kind: "warn" } : null;
 }
 
 export default function Home() {
   const [items, setItems] = useState<Record[]>([]);
-  const [appName, setAppName] = useState("お問い合わせ管理");
+  const [appName, setAppName] = useState("受験スケジュール");
   const [loaded, setLoaded] = useState(false);
 
   const [view, setView] = useState<View>("list");
@@ -187,7 +191,7 @@ export default function Home() {
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<Record | null>(null);
 
-  const [form, setForm] = useState({ name: "", category: CATEGORIES[0], note: "", date: today() });
+  const [form, setForm] = useState({ school: "", kind: CATEGORIES[0], memo: "", due: today() });
 
   useEffect(() => {
     try {
@@ -219,36 +223,36 @@ export default function Home() {
     [items]
   );
 
-  /** 2つ目の統計。LAYOUT で意味が変わる */
+  /** 2つ目の統計 = 期限が過ぎている数 */
   const attention = useMemo(() => {
     const open = items.filter((i) => !i.done);
-    if (LAYOUT === "due") return open.filter((i) => diff(i.date) < 0).length;
+    if (LAYOUT === "due") return open.filter((i) => diff(i.due) < 0).length;
     const limit = LAYOUT === "stage" ? 7 : 3;
-    return open.filter((i) => waiting(i.date) >= limit).length;
+    return open.filter((i) => waiting(i.due) >= limit).length;
   }, [items]);
 
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
     return items
       .filter((i) => (filter === "all" ? true : filter === "open" ? !i.done : i.done))
-      .filter((i) => !k || (i.name + i.note + i.category).toLowerCase().includes(k))
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .filter((i) => !k || (i.school + i.memo + i.kind).toLowerCase().includes(k))
+      .sort((a, b) => a.due.localeCompare(b.due));
   }, [items, filter, q]);
 
   const groups = useMemo(() => grouped(shown, filter), [shown, filter]);
 
   function resetForm() {
-    setForm({ name: "", category: CATEGORIES[0], note: "", date: today() });
+    setForm({ school: "", kind: CATEGORIES[0], memo: "", due: today() });
     setEditing(null);
   }
 
   function save() {
-    const name = form.name.trim();
-    if (!name) return;
+    const school = form.school.trim();
+    if (!school) return;
     if (editing) {
-      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, name } : i)));
+      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, school } : i)));
     } else {
-      setItems([...items, { id: String(Date.now()), ...form, name, done: false }]);
+      setItems([...items, { id: String(Date.now()), ...form, school, done: false }]);
     }
     resetForm();
     setView("list");
@@ -256,7 +260,7 @@ export default function Home() {
 
   function startEdit(r: Record) {
     setEditing(r);
-    setForm({ name: r.name, category: r.category, note: r.note, date: r.date });
+    setForm({ school: r.school, kind: r.kind, memo: r.memo, due: r.due });
     setView("new");
   }
 
@@ -297,7 +301,7 @@ export default function Home() {
             </button>
           ))}
         </div>
-        <div className="side-foot">/build で、あなたの題材に作り替わります</div>
+        <div className="side-foot">入試要項で確認した日付を、その都度ここに入れていきます</div>
       </nav>
 
       {/* ───────── 本体 ───────── */}
@@ -332,7 +336,7 @@ export default function Home() {
               <div className="filters">
                 <div className="search">
                   <input className="field" value={q} onChange={(e) => setQ(e.target.value)}
-                    placeholder="名前・メモで検索" />
+                    placeholder="学校名・区分・メモで検索" />
                 </div>
                 <div className="seg">
                   {(["open", "done", "all"] as Filter[]).map((f) => (
@@ -355,7 +359,8 @@ export default function Home() {
                     <div className="empty">
                       <div className="t">{q ? "見つかりませんでした" : "ここに表示するものがありません"}</div>
                       <div className="d">
-                        {q ? "検索の言葉を変えてみてください。" : "右上の「新規登録」から追加できます。"}
+                        {q ? "学校名の一部だけで探してみてください。"
+                           : "右上の「新規登録」から、出願締切や試験日を追加できます。"}
                       </div>
                     </div>
                   </>
@@ -372,15 +377,13 @@ export default function Home() {
                         return (
                           <div className="row" key={r.id}>
                             <div className="row-main">
-                              <div className="row-title">{r.name}</div>
-                              {r.note && <div className="row-sub">{r.note}</div>}
+                              <div className="row-title">{r.school}</div>
+                              {r.memo && <div className="row-sub">{r.memo}</div>}
                             </div>
                             <div className="row-meta">
                               {b && <span className={`badge badge-${b.kind}`}>{b.text}</span>}
-                              {!(LAYOUT === "stage" && filter === "open") && (
-                                <span className="badge">{r.category}</span>
-                              )}
-                              <span className="row-time">{r.date.slice(5).replace("-", "/")}</span>
+                              <span className="badge">{r.kind}</span>
+                              <span className="row-time">{r.due.slice(5).replace("-", "/")}</span>
                               <button className="btn-ghost" onClick={() => startEdit(r)}>編集</button>
                               <button className="btn-ghost" onClick={() => toggle(r.id)}>
                                 {r.done ? TEXT.toBack : TEXT.toTo}
@@ -402,40 +405,40 @@ export default function Home() {
           {view === "new" && (
             <div className="panel">
               <div className="form-row">
-                <label className="label" htmlFor="f-name">名前<span className="req">必須</span></label>
-                <input id="f-name" className="field" value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                <label className="label" htmlFor="f-school">学校・学部・試験区分<span className="req">必須</span></label>
+                <input id="f-school" className="field" value={form.school}
+                  onChange={(e) => setForm({ ...form, school: e.target.value })}
                   onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-                  placeholder="例：Aさん（中2）" />
-                <span className="hint">あとで見て誰か分かる書き方にします</span>
+                  placeholder="例：北山大学 経済 一般前期" />
+                <span className="hint">あとで見て、どの学校のどの入試か分かる書き方にします</span>
               </div>
 
               <div className="form-row">
                 <div className="inline">
                   <div>
                     <label className="label" htmlFor="f-cat">{TEXT.catLabel}</label>
-                    <select id="f-cat" className="select" value={form.category}
-                      onChange={(e) => setForm({ ...form, category: e.target.value })}>
+                    <select id="f-cat" className="select" value={form.kind}
+                      onChange={(e) => setForm({ ...form, kind: e.target.value })}>
                       {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="label" htmlFor="f-date">{TEXT.dateLabel}</label>
-                    <input id="f-date" className="field" type="date" value={form.date}
-                      onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                    <label className="label" htmlFor="f-due">{TEXT.dateLabel}</label>
+                    <input id="f-due" className="field" type="date" value={form.due}
+                      onChange={(e) => setForm({ ...form, due: e.target.value })} />
                   </div>
                 </div>
               </div>
 
               <div className="form-row">
-                <label className="label" htmlFor="f-note">メモ</label>
-                <textarea id="f-note" className="field" value={form.note}
-                  onChange={(e) => setForm({ ...form, note: e.target.value })}
-                  placeholder="希望曜日・科目・折り返し時間など" />
+                <label className="label" htmlFor="f-memo">メモ</label>
+                <textarea id="f-memo" className="field" value={form.memo}
+                  onChange={(e) => setForm({ ...form, memo: e.target.value })}
+                  placeholder="受験科目・検定料・持ち物・集合時間など" />
               </div>
 
               <div className="form-actions">
-                <button className="btn" onClick={save} disabled={!form.name.trim()}>
+                <button className="btn" onClick={save} disabled={!form.school.trim()}>
                   {editing ? "保存する" : "一覧に追加"}
                 </button>
                 <button className="btn-ghost" onClick={() => { resetForm(); setView("list"); }}>やめる</button>
@@ -443,7 +446,7 @@ export default function Home() {
                 {editing && (
                   <button className="btn-ghost danger-btn"
                     onClick={() => { remove(editing.id); resetForm(); setView("list"); }}>
-                    この1{UNIT}を削除
+                    この予定を削除
                   </button>
                 )}
               </div>
